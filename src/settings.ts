@@ -64,6 +64,7 @@ export interface Settings {
   v: number;
   app: string;
   name: string;
+  maker: string; // printed on the certificate
   edition: number;
   seed: number;
   plate: {
@@ -117,6 +118,7 @@ export const DEFAULTS: Settings = {
   v: SETTINGS_VERSION,
   app: APP_ID,
   name: 'Tumbling Blocks',
+  maker: '',
   edition: 1,
   seed: 427,
   plate: { w: 18, h: 10, border: 0.5, corner: 0.25, holeD: 0.25 },
@@ -239,6 +241,7 @@ export function sanitize(raw: unknown): { s: Settings; notes: string[] } {
     v: SETTINGS_VERSION,
     app: APP_ID,
     name: typeof r.name === 'string' ? r.name.slice(0, 80) : d.name,
+    maker: typeof r.maker === 'string' ? r.maker.slice(0, 80) : d.maker,
     edition: Math.round(clamp(num(r.edition, d.edition), 1, 99999)),
     seed: Math.round(clamp(num(r.seed, d.seed), 0, 999999999)),
     plate: {

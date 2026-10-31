@@ -3,7 +3,8 @@ import { buildPlate, finishPlate, isFieldKind, Plate } from './plate';
 import { drawPlate, fitView, renderToCanvas, View, ViewMode, FRAME_RAIL, FRAME_REVEAL } from './render';
 import { DEFAULTS, Kind, Settings, THICKNESSES, clone, fabLimits, sanitize } from './settings';
 import { autosave, decodeHash, deleteSaved, encodeHash, listSaved, loadAutosave, saveDesign } from './store';
-import { baseName, download, settingsFromFile, toDXF, toJPG, toPNG, toSVG } from './export';
+import { baseName, couponPlate, download, settingsFromFile, toDXF, toJPG, toPNG, toSVG } from './export';
+import { certificatePDF, shopDrawingPDF } from './pdf';
 import { hash01 } from './rng';
 
 // ---------------------------------------------------------------- state
@@ -510,6 +511,59 @@ function buildFilesPanel() {
   );
   p.appendChild(list1);
 
+  title(p, 'Shop drawing and certificate', 'A 1:1 PDF drawing with a title block and scale bar for quoting and sign-off, and a one-page certificate for this numbered plate.');
+  const makerRow = document.createElement('div');
+  makerRow.className = 'select-row stack';
+  makerRow.innerHTML = '<label for="makerInput">Maker, for the certificate</label>';
+  const maker = document.createElement('input');
+  maker.type = 'text';
+  maker.id = 'makerInput';
+  maker.placeholder = 'Studio or maker name';
+  maker.addEventListener('input', () => {
+    s.maker = maker.value;
+    persistSoon();
+  });
+  makerRow.appendChild(maker);
+  p.appendChild(makerRow);
+  makerInput = maker;
+  const listPdf = document.createElement('div');
+  listPdf.className = 'btn-list';
+  listPdf.append(
+    fileBtn('Shop drawing', 'PDF, true scale, title block', false, () =>
+      withFinal(async (pl) => download(baseName(s) + '-drawing.pdf', await shopDrawingPDF(pl, s))),
+    ),
+    fileBtn('Edition certificate', 'PDF, letter, with the product render', false, () =>
+      withFinal(async (pl) => {
+        const cv = renderToCanvas(pl, 1500, 'brass', s.material.t, '#e4e1db', true);
+        const blob: Blob = await new Promise((r) => cv.toBlob((b) => r(b!), 'image/jpeg', 0.9));
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        download(baseName(s) + '-certificate.pdf', await certificatePDF(pl, s, { bytes, w: cv.width, h: cv.height }));
+      }),
+    ),
+  );
+  p.appendChild(listPdf);
+
+  title(p, 'Test coupon', 'A small square from the middle of this exact plate. Cut it first to check the shop can hold these widths and corners before cutting the full sheet.');
+  let couponSize = 4;
+  const sizes = chips(p, [3, 4, 6].map((n) => [`${n} x ${n} in`, () => setCoupon(n)] as [string, () => void]));
+  const setCoupon = (n: number) => {
+    couponSize = n;
+    sizes.querySelectorAll('button').forEach((b, i) => b.setAttribute('aria-pressed', String([3, 4, 6][i] === n)));
+  };
+  setCoupon(4);
+  const listC = document.createElement('div');
+  listC.className = 'btn-list';
+  const couponName = () => `${baseName(s)}-coupon-${couponSize}in`;
+  listC.append(
+    fileBtn('Coupon DXF', 'for the waterjet shop', false, () =>
+      withFinal((pl) => download(couponName() + '.dxf', toDXF(couponPlate(pl, couponSize), s), 'application/dxf')),
+    ),
+    fileBtn('Coupon SVG', '', false, () =>
+      withFinal((pl) => download(couponName() + '.svg', toSVG(couponPlate(pl, couponSize), s), 'image/svg+xml')),
+    ),
+  );
+  p.appendChild(listC);
+
   title(p, 'Images');
   const list2 = document.createElement('div');
   list2.className = 'btn-list';
@@ -553,6 +607,7 @@ function buildFilesPanel() {
 }
 
 let savedEl: HTMLUListElement;
+let makerInput: HTMLInputElement | null = null;
 function renderSaved() {
   const items = listSaved();
   savedEl.innerHTML = '';
@@ -926,6 +981,7 @@ function syncControls() {
   );
   const name = $<HTMLInputElement>('nameInput');
   if (document.activeElement !== name) name.value = s.name;
+  if (makerInput && document.activeElement !== makerInput) makerInput.value = s.maker;
   const ed = $<HTMLInputElement>('editionInput');
   if (document.activeElement !== ed) ed.value = String(s.edition);
   const seed = $<HTMLInputElement>('seedInput');

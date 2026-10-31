@@ -2,7 +2,7 @@
 // and settings JSON. Every file carries the settings so it can be dropped
 // back onto the app to restore the exact design.
 
-import { RoundPoly, V, arcPoint, rpSegments } from './geom';
+import { RoundPoly, V, arcPoint, clean, clipRect, perimeter, rpArea, rpLength, rpPerimeter, rpSegments, signedArea } from './geom';
 import type { Plate } from './plate';
 import { renderToCanvas, ViewMode } from './render';
 import type { Settings } from './settings';
@@ -277,4 +277,74 @@ export function download(name: string, data: Blob | string, type = 'application/
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+// ---------------------------------------------------------------- test coupon
+
+/**
+ * A small square cut from the middle of the real plate: every cut that lies
+ * fully inside the window (with a minimum-web margin) keeps its exact shape.
+ * Cut it first to check the shop's minimums on this exact pattern.
+ */
+export function couponPlate(plate: Plate, size: number): Plate {
+  const c = Math.min(size, plate.w, plate.h);
+  const x0 = (plate.w - c) / 2,
+    y0 = (plate.h - c) / 2;
+  const m = plate.limits.minWeb;
+  const inside = (pts: V[], r: number) =>
+    pts.every((q) => q.x - r >= x0 + m && q.x + r <= x0 + c - m && q.y - r >= y0 + m && q.y + r <= y0 + c - m);
+  const shift = (q: V): V => ({ x: q.x - x0, y: q.y - y0 });
+  // Convex cuts are trimmed to the window: their core is clipped so the
+  // rounded end stays a minimum web away from the coupon edge.
+  const slots: RoundPoly[] = [];
+  for (const rp of plate.slots) {
+    if (inside(rp.pts, rp.r)) {
+      slots.push({ pts: rp.pts.map(shift), r: rp.r });
+      continue;
+    }
+    if (rp.pts.length < 2) continue;
+    const e = m + rp.r;
+    const core = clean(clipRect(rp.pts, x0 + e, y0 + e, x0 + c - e, y0 + c - e));
+    if (!core.length) continue;
+    const trimmed = { pts: core.map(shift), r: rp.r };
+    if (rpLength(trimmed) >= 3 * rp.r) slots.push(trimmed);
+  }
+  const paths = plate.paths.filter((p) => inside(p, 0)).map((p) => p.map(shift));
+  const cr = Math.min(0.125, c / 4);
+  const outline: RoundPoly = {
+    pts: [
+      { x: cr, y: cr },
+      { x: c - cr, y: cr },
+      { x: c - cr, y: c - cr },
+      { x: cr, y: c - cr },
+    ],
+    r: cr,
+  };
+  let cut = rpPerimeter(outline),
+    open = 0;
+  for (const rp of slots) {
+    cut += rpPerimeter(rp);
+    open += rpArea(rp);
+  }
+  for (const p of paths) {
+    cut += perimeter(p);
+    open += Math.abs(signedArea(p));
+  }
+  open /= rpArea(outline);
+  return {
+    ...plate,
+    w: c,
+    h: c,
+    outline,
+    holes: [],
+    slots,
+    paths,
+    stats: {
+      ...plate.stats,
+      slots: slots.length + paths.length,
+      pierces: slots.length + paths.length,
+      cutLength: cut,
+      openArea: open,
+    },
+  };
 }

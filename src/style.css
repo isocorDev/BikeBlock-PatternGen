@@ -665,3 +665,10 @@ button.explore:hover {
 .panel > * {
   flex-shrink: 0;
 }
+.select-row.stack {
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+.select-row.stack input {
+  width: 100%;
+}

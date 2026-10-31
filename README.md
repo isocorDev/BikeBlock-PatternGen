@@ -33,9 +33,14 @@ Plus: presets grouped by lineage (geometric, Japanese kumiko, Islamic geometric,
 | SVG | Laser, Illustrator, Fusion 360. Inches, 1:1. Layers `cut-outline` and `cut-interior`, plus a filled preview layer. |
 | PNG | Product render in the frame, or black and white plate. 2400 px. |
 | JPG | 1200 px thumbnail. |
+| PDF drawing | True 1:1 vector drawing with a title block (name, plate number, pattern, size, material, process, cut length, pierces, open area, seed, design code, date) and a 1 in scale bar to check print scale. |
+| PDF certificate | Letter-size certificate of origin for the numbered plate: product render, specs, seed, design code, maker, signature line. |
+| Coupon DXF / SVG | A 3, 4 or 6 in square from the middle of the exact plate, to test-cut before the full sheet. Cuts crossing the coupon edge are trimmed and end round, a minimum web from the edge. |
 | JSON | Settings only. |
 
-Drop any of these files back onto the app (or use Files, Open a file) to reopen the exact design.
+The design code is a short fingerprint of every setting that affects the cut: same code, same plate.
+
+Drop the SVG, DXF, PNG or JSON back onto the app (or use Files, Open a file) to reopen the exact design.
 
 ## Fabrication rules
 
@@ -77,7 +82,8 @@ The site deploys to GitHub Pages from `main` through `.github/workflows/deploy.y
 - `src/worker.ts` runs field builds in the background.
 - `src/geom.ts` convex polygon clipping and the rounded-polygon shape analytic cuts use.
 - `src/render.ts` canvas preview and image renders.
-- `src/export.ts` SVG, DXF, PNG with embedded settings.
+- `src/export.ts` SVG, DXF, PNG with embedded settings, test coupon.
+- `src/pdf.ts` hand-written PDF: shop drawing and certificate.
 - `src/store.ts` autosave, saved designs, URL encoding.
 - `src/main.ts` controls and interaction.
 
@@ -85,4 +91,4 @@ The preview and the exports draw the same geometry, so the screen matches the cu
 
 ## Roadmap
 
-A bike-aware mask once the bike's position on the plate is known, PDF with a title block, edition certificates, and moire and guilloche patterns.
+Moire, guilloche, Penrose and flow-line patterns. A bike-aware mask is not planned: only the top tube crosses the opening, and the Calm band blend covers that.
