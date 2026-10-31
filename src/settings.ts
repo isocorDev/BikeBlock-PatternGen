@@ -2,9 +2,15 @@
 // Everything a design needs to regenerate exactly lives in this object.
 
 export const APP_ID = 'bikeblock-patterngen';
-export const SETTINGS_VERSION = 1;
+export const SETTINGS_VERSION = 2;
 
-export type Layout = 'tumbling' | 'parquet' | 'triangles' | 'single';
+export type Kind = 'cells' | 'circles' | 'life' | 'noise' | 'rd';
+export type Layout = 'tumbling' | 'parquet' | 'triangles' | 'voronoi' | 'single';
+export type Fill = 'hatch' | 'concentric' | 'open';
+export type Sizing = 'noise' | 'radial' | 'gradient' | 'random';
+export type FieldMode = 'region' | 'band';
+export type RDPreset = 'coral' | 'labyrinth' | 'fingerprint' | 'spots' | 'worms';
+export type IslandMode = 'bridge' | 'remove';
 export type HatchRule = 'random' | 'first' | 'second' | 'alternate';
 export type Process = 'waterjet' | 'laser';
 
@@ -26,8 +32,10 @@ export interface Settings {
     process: Process;
   };
   pattern: {
-    layout: Layout;
-    scale: number; // cell size, in (hex circumradius, square side, triangle side)
+    kind: Kind; // which generator
+    layout: Layout; // cells: how the plate is divided
+    fill: Fill; // cells: what goes in each cell
+    scale: number; // main size, in: cell size, feature size, life cell, noise scale
     rot: number; // degrees
     line: number; // brass line width, in
     gap: number; // cut (slot) width, in
@@ -36,6 +44,20 @@ export interface Settings {
     variation: number; // 0..1, used by the random rule
     phase: number; // 0..1, slides stripes within each cell
     minSlot: number; // drop slots shorter than this, in
+    vJitter: number; // voronoi: 0 = grid, 1 = fully random sites
+    vRelax: number; // voronoi: Lloyd relaxation passes
+    cMin: number; // circles: smallest hole diameter, in
+    cMax: number; // circles: largest hole diameter, in
+    cSizing: Sizing; // circles: what drives hole size
+    lifeDensity: number; // life: share of cells alive at the start
+    lifeGens: number; // life: generations to run
+    round: number; // life: 0 = square holes, 1 = round holes
+    fieldMode: FieldMode; // noise and rd: blobs or contour bands
+    open: number; // noise and rd region mode: target open share before fabrication fixes
+    octaves: number; // noise: detail layers
+    warp: number; // noise: domain warp strength
+    rd: RDPreset; // reaction diffusion character
+    islands: IslandMode; // fields: what to do with brass that would fall out
   };
 }
 
@@ -48,7 +70,9 @@ export const DEFAULTS: Settings = {
   plate: { w: 18, h: 10, border: 0.5, corner: 0.25, holeD: 0.25 },
   material: { t: 0.125, process: 'waterjet' },
   pattern: {
+    kind: 'cells',
     layout: 'tumbling',
+    fill: 'hatch',
     scale: 3.4,
     rot: 0,
     line: 0.14,
@@ -58,6 +82,20 @@ export const DEFAULTS: Settings = {
     variation: 0.5,
     phase: 0,
     minSlot: 0.45,
+    vJitter: 0.8,
+    vRelax: 2,
+    cMin: 0.2,
+    cMax: 0.9,
+    cSizing: 'noise',
+    lifeDensity: 0.35,
+    lifeGens: 6,
+    round: 0.4,
+    fieldMode: 'region',
+    open: 0.42,
+    octaves: 2,
+    warp: 0.25,
+    rd: 'coral',
+    islands: 'bridge',
   },
 };
 
@@ -84,6 +122,9 @@ export function fabLimits(s: Settings): FabLimits {
 export const THICKNESSES = [0.0625, 0.09375, 0.125, 0.1875, 0.25];
 
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
+function pick<T extends string>(x: unknown, opts: T[], d: T): T {
+  return opts.includes(x as T) ? (x as T) : d;
+}
 const num = (x: unknown, d: number) => (typeof x === 'number' && Number.isFinite(x) ? x : d);
 
 /**
@@ -117,20 +158,32 @@ export function sanitize(raw: unknown): { s: Settings; notes: string[] } {
       process: rm.process === 'laser' ? 'laser' : 'waterjet',
     },
     pattern: {
-      layout: (['tumbling', 'parquet', 'triangles', 'single'] as Layout[]).includes(rpat.layout)
-        ? rpat.layout
-        : d.pattern.layout,
+      kind: pick(rpat.kind, ['cells', 'circles', 'life', 'noise', 'rd'], d.pattern.kind),
+      layout: pick(rpat.layout, ['tumbling', 'parquet', 'triangles', 'voronoi', 'single'], d.pattern.layout),
+      fill: pick(rpat.fill, ['hatch', 'concentric', 'open'], d.pattern.fill),
       scale: clamp(num(rpat.scale, d.pattern.scale), 0.5, 24),
       rot: clamp(num(rpat.rot, d.pattern.rot), -180, 180),
       line: num(rpat.line, d.pattern.line),
       gap: num(rpat.gap, d.pattern.gap),
       seam: num(rpat.seam, d.pattern.seam),
-      rule: (['random', 'first', 'second', 'alternate'] as HatchRule[]).includes(rpat.rule)
-        ? rpat.rule
-        : d.pattern.rule,
+      rule: pick(rpat.rule, ['random', 'first', 'second', 'alternate'], d.pattern.rule),
       variation: clamp(num(rpat.variation, d.pattern.variation), 0, 1),
       phase: clamp(num(rpat.phase, d.pattern.phase), 0, 1),
       minSlot: clamp(num(rpat.minSlot, d.pattern.minSlot), 0, 6),
+      vJitter: clamp(num(rpat.vJitter, d.pattern.vJitter), 0, 1),
+      vRelax: Math.round(clamp(num(rpat.vRelax, d.pattern.vRelax), 0, 6)),
+      cMin: clamp(num(rpat.cMin, d.pattern.cMin), 0.04, 6),
+      cMax: clamp(num(rpat.cMax, d.pattern.cMax), 0.04, 8),
+      cSizing: pick(rpat.cSizing, ['noise', 'radial', 'gradient', 'random'], d.pattern.cSizing),
+      lifeDensity: clamp(num(rpat.lifeDensity, d.pattern.lifeDensity), 0.02, 0.9),
+      lifeGens: Math.round(clamp(num(rpat.lifeGens, d.pattern.lifeGens), 0, 300)),
+      round: clamp(num(rpat.round, d.pattern.round), 0, 1),
+      fieldMode: pick(rpat.fieldMode, ['region', 'band'], d.pattern.fieldMode),
+      open: clamp(num(rpat.open, d.pattern.open), 0.05, 0.85),
+      octaves: Math.round(clamp(num(rpat.octaves, d.pattern.octaves), 1, 6)),
+      warp: clamp(num(rpat.warp, d.pattern.warp), 0, 2),
+      rd: pick(rpat.rd, ['coral', 'labyrinth', 'fingerprint', 'spots', 'worms'], d.pattern.rd),
+      islands: pick(rpat.islands, ['bridge', 'remove'], d.pattern.islands),
     },
   };
 
@@ -149,6 +202,8 @@ export function sanitize(raw: unknown): { s: Settings; notes: string[] } {
     notes.push(`Seam raised to ${f3(lim.minWeb)} in (minimum brass web).`);
     p.seam = lim.minWeb;
   }
+  if (p.cMin < lim.minCut) p.cMin = lim.minCut;
+  if (p.cMax < p.cMin) p.cMax = p.cMin;
   p.line = Math.min(p.line, 3);
   p.gap = Math.min(p.gap, 3);
   p.seam = Math.min(p.seam, 3);

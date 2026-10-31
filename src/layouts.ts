@@ -2,8 +2,9 @@
 // directions that suit it (usually its own edge directions) and the integer
 // coordinates used to seed its random choices.
 
-import { V, orient } from './geom';
-import type { Layout } from './settings';
+import { V, clipHalf, orient, signedArea } from './geom';
+import { hash01 } from './rng';
+import type { Settings } from './settings';
 
 export interface Cell {
   poly: V[]; // pattern space, positively oriented
@@ -15,8 +16,11 @@ export interface Cell {
 const DEG = Math.PI / 180;
 
 /** Cells covering a disk of radius R around the origin. */
-export function makeCells(layout: Layout, s: number, R: number): Cell[] {
-  switch (layout) {
+export function makeCells(st: Settings, R: number): Cell[] {
+  const s = st.pattern.scale;
+  switch (st.pattern.layout) {
+    case 'voronoi':
+      return voronoi(st, R);
     case 'tumbling':
       return tumbling(s, R);
     case 'parquet':
@@ -131,4 +135,94 @@ function triangles(s: number, R: number): Cell[] {
     }
   }
   return cells;
+}
+
+/**
+ * Voronoi cells from a jittered grid of seeded sites, optionally relaxed
+ * toward even sizes (Lloyd). Every cell is convex, so the same slot and
+ * fabrication machinery works unchanged.
+ */
+function voronoi(st: Settings, R: number): Cell[] {
+  const s = st.pattern.scale;
+  const jit = st.pattern.vJitter;
+  const lim = R + 2 * s;
+  const N = Math.ceil(lim / s) + 1;
+  type Site = { x: number; y: number; i: number; j: number };
+  let sites: Site[] = [];
+  for (let j = -N; j <= N; j++)
+    for (let i = -N; i <= N; i++) {
+      const ox = (hash01(st.seed, i, j, 11) - 0.5) * jit * s;
+      const oy = (hash01(st.seed, i, j, 12) - 0.5) * jit * s;
+      sites.push({ x: (i + (j & 1 ? 0.5 : 0)) * s + ox, y: j * s * 0.866 + oy, i, j });
+    }
+  const B = lim + s;
+  const box: V[] = orient([
+    { x: -B, y: -B },
+    { x: B, y: -B },
+    { x: B, y: B },
+    { x: -B, y: B },
+  ]);
+  const cellsOf = (ss: Site[]) => {
+    // Spatial hash for neighbor lookup.
+    const g = new Map<string, number[]>();
+    const key = (x: number, y: number) => `${Math.floor(x / s)},${Math.floor(y / s)}`;
+    ss.forEach((p, k) => {
+      const kk = key(p.x, p.y);
+      (g.get(kk) ?? g.set(kk, []).get(kk)!).push(k);
+    });
+    return ss.map((p, k) => {
+      let poly = box;
+      const gx = Math.floor(p.x / s);
+      const gy = Math.floor(p.y / s);
+      for (let dy = -3; dy <= 3 && poly.length; dy++)
+        for (let dx = -3; dx <= 3 && poly.length; dx++) {
+          const bucket = g.get(`${gx + dx},${gy + dy}`);
+          if (!bucket) continue;
+          for (const m of bucket) {
+            if (m === k) continue;
+            const q = ss[m];
+            const n = { x: q.x - p.x, y: q.y - p.y };
+            poly = clipHalf(poly, n, (q.x * q.x + q.y * q.y - p.x * p.x - p.y * p.y) / 2);
+            if (!poly.length) break;
+          }
+        }
+      return poly;
+    });
+  };
+  let polys = cellsOf(sites);
+  for (let it = 0; it < st.pattern.vRelax; it++) {
+    sites = sites.map((p, k) => {
+      const c = areaCentroid(polys[k]);
+      // Sites on the outer ring stay put so the edge does not collapse.
+      return Math.abs(p.x) > lim - s || Math.abs(p.y) > lim - s || !c ? p : { ...p, x: c.x, y: c.y };
+    });
+    polys = cellsOf(sites);
+  }
+  const out: Cell[] = [];
+  sites.forEach((p, k) => {
+    const poly = polys[k];
+    if (poly.length < 3 || Math.abs(p.x) > lim || Math.abs(p.y) > lim) return;
+    out.push({
+      poly: orient(poly),
+      dirs: [0, 60 * DEG, 120 * DEG],
+      key: [p.i, p.j, 0],
+      parity: (((p.i + 2 * p.j) % 3) + 3) % 3,
+    });
+  });
+  return out;
+}
+
+function areaCentroid(p: V[]): V | null {
+  const a = signedArea(p);
+  if (Math.abs(a) < 1e-9) return null;
+  let cx = 0,
+    cy = 0;
+  for (let i = 0; i < p.length; i++) {
+    const q = p[i];
+    const w = p[(i + 1) % p.length];
+    const c = q.x * w.y - w.x * q.y;
+    cx += (q.x + w.x) * c;
+    cy += (q.y + w.y) * c;
+  }
+  return { x: cx / (6 * a), y: cy / (6 * a) };
 }

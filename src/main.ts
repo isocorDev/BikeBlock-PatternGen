@@ -1,7 +1,7 @@
 import './style.css';
-import { buildPlate, Plate } from './plate';
+import { buildPlate, finishPlate, isFieldKind, Plate } from './plate';
 import { drawPlate, fitView, renderToCanvas, View, ViewMode, FRAME_RAIL, FRAME_REVEAL } from './render';
-import { DEFAULTS, Settings, THICKNESSES, clone, fabLimits, sanitize } from './settings';
+import { DEFAULTS, Kind, Settings, THICKNESSES, clone, fabLimits, sanitize } from './settings';
 import { autosave, decodeHash, deleteSaved, encodeHash, listSaved, loadAutosave, saveDesign } from './store';
 import { baseName, download, settingsFromFile, toDXF, toJPG, toPNG, toSVG } from './export';
 import { hash01 } from './rng';
@@ -10,7 +10,7 @@ import { hash01 } from './rng';
 
 let s: Settings;
 let notes: string[] = [];
-let plate: Plate;
+let plate!: Plate;
 let mode: ViewMode = 'brass';
 let showFrame = true;
 let view: View = { scale: 40, ox: 0, oy: 0 };
@@ -50,14 +50,24 @@ function set(path: Path, val: unknown) {
   o[last] = val;
 }
 
-const numCtls: NumCtl[] = [];
-const numEls = new Map<Path, { range: HTMLInputElement; num: HTMLInputElement; ctl: NumCtl }>();
+type When = (s: Settings) => boolean;
+const always: When = () => true;
+const kindIs =
+  (...k: Kind[]): When =>
+  (st) =>
+    k.includes(st.pattern.kind);
+const conditional: { el: HTMLElement; when: When }[] = [];
+function gate(el: HTMLElement, when: When) {
+  if (when !== always) conditional.push({ el, when });
+}
 
-function numRow(parent: HTMLElement, c: NumCtl) {
-  numCtls.push(c);
+const numEls: { path: Path; range: HTMLInputElement; num: HTMLInputElement; ctl: NumCtl }[] = [];
+
+function numRow(parent: HTMLElement, c: NumCtl, when: When = always) {
+  const wrap = document.createElement('div');
   const row = document.createElement('div');
   row.className = 'row';
-  const id = 'c-' + c.path.replace(/\./g, '-');
+  const id = 'c' + numEls.length + '-' + c.path.replace(/\./g, '-');
   row.innerHTML = `<label for="${id}">${c.label} <span class="unit">${c.unit}</span></label>`;
   const num = document.createElement('input');
   num.type = 'number';
@@ -81,21 +91,30 @@ function numRow(parent: HTMLElement, c: NumCtl) {
     } else syncControls();
   });
   row.append(num, range);
-  parent.appendChild(row);
+  wrap.appendChild(row);
   if (c.hint) {
     const h = document.createElement('p');
     h.className = 'hint';
     h.textContent = c.hint;
-    parent.appendChild(h);
+    wrap.appendChild(h);
   }
-  numEls.set(c.path, { range, num, ctl: c });
+  parent.appendChild(wrap);
+  gate(wrap, when);
+  numEls.push({ path: c.path, range, num, ctl: c });
 }
 
-const selEls = new Map<Path, HTMLSelectElement>();
-function selectRow(parent: HTMLElement, path: Path, label: string, options: [string, string][], numeric = false) {
+const selEls: { path: Path; sel: HTMLSelectElement }[] = [];
+function selectRow(
+  parent: HTMLElement,
+  path: Path,
+  label: string,
+  options: [string, string][],
+  numeric = false,
+  when: When = always,
+) {
   const row = document.createElement('div');
   row.className = 'select-row';
-  const id = 'c-' + path.replace(/\./g, '-');
+  const id = 'c' + selEls.length + '-' + path.replace(/\./g, '-');
   row.innerHTML = `<label for="${id}">${label}</label>`;
   const sel = document.createElement('select');
   sel.id = id;
@@ -107,24 +126,28 @@ function selectRow(parent: HTMLElement, path: Path, label: string, options: [str
   }
   sel.addEventListener('change', () => {
     set(path, numeric ? parseFloat(sel.value) : sel.value);
+    userMovedView = userMovedView && path !== 'pattern.kind';
     update();
   });
   row.appendChild(sel);
   parent.appendChild(row);
-  selEls.set(path, sel);
+  gate(row, when);
+  selEls.push({ path, sel });
   return row;
 }
 
-function title(parent: HTMLElement, text: string, hint?: string) {
+function title(parent: HTMLElement, text: string, hint?: string, when: When = always) {
   const h = document.createElement('h3');
   h.className = 'group-title';
   h.textContent = text;
   parent.appendChild(h);
+  gate(h, when);
   if (hint) {
     const p = document.createElement('p');
     p.className = 'hint';
     p.textContent = hint;
     parent.appendChild(p);
+    gate(p, when);
   }
 }
 
@@ -142,17 +165,21 @@ function chips(parent: HTMLElement, items: [string, () => void][]) {
   return wrap;
 }
 
-const PRESETS: [string, Partial<Settings['pattern']>][] = [
-  ['Tumbling hatch', { layout: 'tumbling', scale: 3.4, rot: 0, line: 0.14, gap: 0.22, seam: 0.14, rule: 'random', variation: 0.5, phase: 0 }],
-  ['Basketweave', { layout: 'parquet', scale: 2, rot: 0, line: 0.14, gap: 0.2, seam: 0.2, rule: 'alternate', phase: 0 }],
-  ['Diagonal weave', { layout: 'parquet', scale: 2.4, rot: 45, line: 0.14, gap: 0.2, seam: 0.16, rule: 'alternate', phase: 0 }],
-  ['Triangle facets', { layout: 'triangles', scale: 3, rot: 0, line: 0.14, gap: 0.2, seam: 0.14, rule: 'random', variation: 0.67, phase: 0 }],
-  ['Large blocks', { layout: 'tumbling', scale: 5.5, rot: 90, line: 0.14, gap: 0.26, seam: 0.18, rule: 'alternate', phase: 0.5 }],
-  ['Single field', { layout: 'single', rot: 30, line: 0.14, gap: 0.22, rule: 'first', phase: 0 }],
+type Preset = [string, Partial<Settings['pattern']>];
+const PRESETS: Preset[] = [
+  ['Tumbling hatch', { kind: 'cells', layout: 'tumbling', fill: 'hatch', scale: 3.4, rot: 0, line: 0.14, gap: 0.22, seam: 0.14, rule: 'random', variation: 0.5, phase: 0 }],
+  ['Basketweave', { kind: 'cells', layout: 'parquet', fill: 'hatch', scale: 2, rot: 0, line: 0.14, gap: 0.2, seam: 0.2, rule: 'alternate', phase: 0 }],
+  ['Triangle facets', { kind: 'cells', layout: 'triangles', fill: 'hatch', scale: 3, rot: 0, line: 0.14, gap: 0.2, seam: 0.14, rule: 'random', variation: 0.67, phase: 0 }],
+  ['Nested rhombi', { kind: 'cells', layout: 'tumbling', fill: 'concentric', scale: 3.4, rot: 0, line: 0.14, gap: 0.18, seam: 0.16, phase: 0 }],
+  ['Faceted stone', { kind: 'cells', layout: 'voronoi', fill: 'hatch', scale: 2.2, rot: 0, line: 0.14, gap: 0.2, seam: 0.16, rule: 'random', variation: 0.67, vJitter: 0.8, vRelax: 2 }],
+  ['Stained glass', { kind: 'cells', layout: 'voronoi', fill: 'open', scale: 1.4, seam: 0.16, vJitter: 0.9, vRelax: 2 }],
+  ['Coral', { kind: 'rd', rd: 'coral', scale: 0.7, open: 0.45, fieldMode: 'region', seam: 0.16, islands: 'bridge' }],
+  ['Labyrinth', { kind: 'rd', rd: 'labyrinth', scale: 0.7, open: 0.45, fieldMode: 'region', seam: 0.16, islands: 'bridge' }],
+  ['Topographic', { kind: 'noise', fieldMode: 'band', scale: 5, open: 0.5, octaves: 2, warp: 0.25, line: 0.14, gap: 0.2, seam: 0.16, islands: 'bridge' }],
+  ['Perforated', { kind: 'circles', cSizing: 'noise', cMin: 0.15, cMax: 0.9, scale: 4, line: 0.14 }],
+  ['Life', { kind: 'life', scale: 0.45, line: 0.14, round: 0.3, lifeDensity: 0.35, lifeGens: 6 }],
+  ['Single field', { kind: 'cells', layout: 'single', fill: 'hatch', rot: 30, line: 0.14, gap: 0.22, rule: 'first', phase: 0 }],
 ];
-
-let ruleRow: HTMLElement;
-let variationRow: HTMLElement[] = [];
 
 function buildPatternPanel() {
   const p = $('panel-pattern');
@@ -169,31 +196,103 @@ function buildPatternPanel() {
     ]),
   );
 
-  title(p, 'Layout', 'How the plate is divided into cells. Each cell is hatched in one direction.');
-  selectRow(p, 'pattern.layout', 'Cells', [
+  title(p, 'Generator');
+  selectRow(p, 'pattern.kind', 'Pattern', [
+    ['cells', 'Cells and fills'],
+    ['circles', 'Circle packing'],
+    ['life', 'Game of Life'],
+    ['noise', 'Noise field'],
+    ['rd', 'Reaction diffusion'],
+  ]);
+
+  // ---- cells
+  const cells = kindIs('cells');
+  const hatch: When = (st) => cells(st) && st.pattern.fill === 'hatch' && st.pattern.layout !== 'single';
+  const lined: When = (st) => cells(st) && st.pattern.fill !== 'open';
+  title(p, 'Cells', 'The plate is divided into cells, and each cell gets a fill.', cells);
+  selectRow(p, 'pattern.layout', 'Layout', [
     ['tumbling', 'Tumbling blocks'],
     ['parquet', 'Squares'],
     ['triangles', 'Triangles'],
+    ['voronoi', 'Voronoi'],
     ['single', 'One field'],
-  ]);
-  ruleRow = selectRow(p, 'pattern.rule', 'Hatch direction', [
+  ], false, cells);
+  selectRow(p, 'pattern.fill', 'Fill', [
+    ['hatch', 'Parallel lines'],
+    ['concentric', 'Concentric bands'],
+    ['open', 'Open cell'],
+  ], false, cells);
+  selectRow(p, 'pattern.rule', 'Line direction', [
     ['random', 'Random by seed'],
     ['alternate', 'Alternating'],
     ['first', 'All the same'],
     ['second', 'All the same, turned'],
-  ]);
-  const before = p.childElementCount;
-  numRow(p, { path: 'pattern.variation', label: 'Direction mix', unit: '', min: 0, max: 1, step: 0.01, digits: 2, hint: 'Share of cells hatched the second way. Only used by Random by seed.' });
-  variationRow = Array.from(p.children).slice(before) as HTMLElement[];
-  numRow(p, { path: 'pattern.scale', label: 'Cell size', unit: 'in', min: 0.75, max: 12, step: 0.05, digits: 2 });
-  numRow(p, { path: 'pattern.rot', label: 'Rotation', unit: 'deg', min: -90, max: 90, step: 1, digits: 0 });
+  ], false, hatch);
+  numRow(p, { path: 'pattern.variation', label: 'Direction mix', unit: '', min: 0, max: 1, step: 0.01, digits: 2, hint: 'Share of cells turned. Only used by Random by seed.' }, (st) => hatch(st) && st.pattern.rule === 'random');
+  numRow(p, { path: 'pattern.scale', label: 'Cell size', unit: 'in', min: 0.75, max: 12, step: 0.05, digits: 2 }, (st) => cells(st) && st.pattern.layout !== 'single');
+  numRow(p, { path: 'pattern.rot', label: 'Rotation', unit: 'deg', min: -90, max: 90, step: 1, digits: 0 }, cells);
+  numRow(p, { path: 'pattern.vJitter', label: 'Irregularity', unit: '', min: 0, max: 1, step: 0.01, digits: 2 }, (st) => cells(st) && st.pattern.layout === 'voronoi');
+  numRow(p, { path: 'pattern.vRelax', label: 'Evenness', unit: 'passes', min: 0, max: 6, step: 1, digits: 0 }, (st) => cells(st) && st.pattern.layout === 'voronoi');
+  title(p, 'Lines', 'Brass line and cut widths set the rhythm. Fabrication sets the minimums.', lined);
+  numRow(p, { path: 'pattern.line', label: 'Brass line', unit: 'in', min: 0.0625, max: 0.75, step: 0.005, digits: 3 }, lined);
+  numRow(p, { path: 'pattern.gap', label: 'Cut gap', unit: 'in', min: 0.04, max: 0.75, step: 0.005, digits: 3 }, lined);
+  numRow(p, { path: 'pattern.seam', label: 'Seam between cells', unit: 'in', min: 0.0625, max: 0.75, step: 0.005, digits: 3 }, cells);
+  numRow(p, { path: 'pattern.phase', label: 'Line offset', unit: '', min: 0, max: 1, step: 0.01, digits: 2, hint: 'Slides the lines within each cell.' }, lined);
+  numRow(p, { path: 'pattern.minSlot', label: 'Drop cuts shorter than', unit: 'in', min: 0, max: 2, step: 0.05, digits: 2, hint: 'Removes stubs where lines meet a corner.' }, cells);
 
-  title(p, 'Lines', 'Brass line and cut widths set the rhythm. Fabrication sets the minimums.');
-  numRow(p, { path: 'pattern.line', label: 'Brass line', unit: 'in', min: 0.0625, max: 0.75, step: 0.005, digits: 3 });
-  numRow(p, { path: 'pattern.gap', label: 'Cut gap', unit: 'in', min: 0.04, max: 0.75, step: 0.005, digits: 3 });
-  numRow(p, { path: 'pattern.seam', label: 'Seam between cells', unit: 'in', min: 0.0625, max: 0.75, step: 0.005, digits: 3 });
-  numRow(p, { path: 'pattern.phase', label: 'Line offset', unit: '', min: 0, max: 1, step: 0.01, digits: 2, hint: 'Slides the lines within each cell.' });
-  numRow(p, { path: 'pattern.minSlot', label: 'Drop slots shorter than', unit: 'in', min: 0, max: 2, step: 0.05, digits: 2, hint: 'Removes stubs where lines meet a corner. Raise it for a cleaner look.' });
+  // ---- circles
+  const circ = kindIs('circles');
+  title(p, 'Circles', 'Holes are packed as tightly as the spacing allows, sized by a field.', circ);
+  selectRow(p, 'pattern.cSizing', 'Size follows', [
+    ['noise', 'Soft noise'],
+    ['radial', 'Center outward'],
+    ['gradient', 'Side to side'],
+    ['random', 'Nothing (random)'],
+  ], false, circ);
+  numRow(p, { path: 'pattern.cMin', label: 'Smallest hole', unit: 'in', min: 0.04, max: 2, step: 0.01, digits: 2 }, circ);
+  numRow(p, { path: 'pattern.cMax', label: 'Largest hole', unit: 'in', min: 0.04, max: 4, step: 0.01, digits: 2 }, circ);
+  numRow(p, { path: 'pattern.line', label: 'Spacing', unit: 'in', min: 0.0625, max: 0.75, step: 0.005, digits: 3 }, circ);
+  numRow(p, { path: 'pattern.scale', label: 'Noise size', unit: 'in', min: 0.75, max: 12, step: 0.05, digits: 2 }, (st) => circ(st) && st.pattern.cSizing === 'noise');
+  numRow(p, { path: 'pattern.rot', label: 'Direction', unit: 'deg', min: -180, max: 180, step: 1, digits: 0 }, (st) => circ(st) && st.pattern.cSizing === 'gradient');
+
+  // ---- life
+  const life = kindIs('life');
+  title(p, 'Game of Life', 'A seeded random start, run forward a number of generations. Live cells are cut.', life);
+  numRow(p, { path: 'pattern.scale', label: 'Cell size', unit: 'in', min: 0.2, max: 3, step: 0.01, digits: 2 }, life);
+  numRow(p, { path: 'pattern.line', label: 'Brass wall', unit: 'in', min: 0.0625, max: 0.75, step: 0.005, digits: 3 }, life);
+  numRow(p, { path: 'pattern.lifeDensity', label: 'Starting density', unit: '', min: 0.02, max: 0.9, step: 0.01, digits: 2 }, life);
+  numRow(p, { path: 'pattern.lifeGens', label: 'Generations', unit: '', min: 0, max: 120, step: 1, digits: 0 }, life);
+  numRow(p, { path: 'pattern.round', label: 'Roundness', unit: '', min: 0, max: 1, step: 0.01, digits: 2 }, life);
+
+  // ---- fields
+  const field = kindIs('noise', 'rd');
+  const band: When = (st) => field(st) && st.pattern.fieldMode === 'band';
+  title(p, 'Field', 'A smooth field is cut where it is high, or in bands that follow its outline.', field);
+  selectRow(p, 'pattern.rd', 'Character', [
+    ['coral', 'Coral'],
+    ['labyrinth', 'Labyrinth'],
+    ['fingerprint', 'Fingerprint'],
+    ['spots', 'Spots'],
+    ['worms', 'Worms'],
+  ], false, kindIs('rd'));
+  selectRow(p, 'pattern.fieldMode', 'Cut', [
+    ['region', 'Shapes'],
+    ['band', 'Contour bands'],
+  ], false, field);
+  numRow(p, { path: 'pattern.scale', label: 'Feature size', unit: 'in', min: 0.3, max: 12, step: 0.05, digits: 2 }, field);
+  numRow(p, { path: 'pattern.open', label: 'Balance', unit: '', min: 0.05, max: 0.85, step: 0.01, digits: 2, hint: 'In Shapes, the share of the plate that is cut. In Contour bands, where the bands are centered.' }, field);
+  numRow(p, { path: 'pattern.octaves', label: 'Detail', unit: 'layers', min: 1, max: 6, step: 1, digits: 0 }, kindIs('noise'));
+  numRow(p, { path: 'pattern.warp', label: 'Warp', unit: '', min: 0, max: 2, step: 0.01, digits: 2 }, kindIs('noise'));
+  numRow(p, { path: 'pattern.rot', label: 'Rotation', unit: 'deg', min: -90, max: 90, step: 1, digits: 0 }, kindIs('noise'));
+  numRow(p, { path: 'pattern.line', label: 'Brass line', unit: 'in', min: 0.0625, max: 0.75, step: 0.005, digits: 3 }, band);
+  numRow(p, { path: 'pattern.gap', label: 'Cut gap', unit: 'in', min: 0.04, max: 0.75, step: 0.005, digits: 3 }, band);
+  numRow(p, { path: 'pattern.phase', label: 'Band offset', unit: '', min: 0, max: 1, step: 0.01, digits: 2 }, band);
+  title(p, 'Loose pieces', 'Brass enclosed by a cut would fall out. Bridge it to the plate, or cut it away.', field);
+  selectRow(p, 'pattern.islands', 'Enclosed brass', [
+    ['bridge', 'Add bridges'],
+    ['remove', 'Cut away'],
+  ], false, field);
+  numRow(p, { path: 'pattern.seam', label: 'Bridge width', unit: 'in', min: 0.0625, max: 0.75, step: 0.005, digits: 3 }, (st) => field(st) && st.pattern.islands === 'bridge');
 }
 
 function buildPlatePanel() {
@@ -242,7 +341,7 @@ function buildFabPanel() {
   const h = document.createElement('p');
   h.className = 'hint';
   h.textContent =
-    'Every slot is rounded to the cutter radius, and no slot touches another or the border, so the brass is always one connected piece. Exported files are cut-ready at these settings.';
+    'Cells, circles and Life: every cut is rounded to the cutter radius and no cut touches another, so the brass is always one piece. Noise and reaction diffusion: thin brass and thin cuts are repaired, loose pieces are bridged or cut away, and the checks below report anything left.';
   p.appendChild(h);
 }
 
@@ -257,8 +356,8 @@ function buildFilesPanel() {
   const list1 = document.createElement('div');
   list1.className = 'btn-list';
   list1.append(
-    fileBtn('Download DXF', 'for the waterjet shop', true, () => download(baseName(s) + '.dxf', toDXF(plate, s), 'application/dxf')),
-    fileBtn('Download SVG', 'for laser, Illustrator, Fusion 360', false, () => download(baseName(s) + '.svg', toSVG(plate, s), 'image/svg+xml')),
+    fileBtn('Download DXF', 'for the waterjet shop', true, () => withFinal((pl) => download(baseName(s) + '.dxf', toDXF(pl, s), 'application/dxf'))),
+    fileBtn('Download SVG', 'for laser, Illustrator, Fusion 360', false, () => withFinal((pl) => download(baseName(s) + '.svg', toSVG(pl, s), 'image/svg+xml'))),
   );
   p.appendChild(list1);
 
@@ -266,9 +365,9 @@ function buildFilesPanel() {
   const list2 = document.createElement('div');
   list2.className = 'btn-list';
   list2.append(
-    fileBtn('Product render', 'PNG, 2400 px, in the frame', false, async () => download(baseName(s) + '.png', await toPNG(plate, s, 'brass', 2400, true))),
-    fileBtn('Black and white', 'PNG, 2400 px, plate only', false, async () => download(baseName(s) + '-bw.png', await toPNG(plate, s, 'bw', 2400, false))),
-    fileBtn('Thumbnail', 'JPG, 1200 px', false, async () => download(baseName(s) + '.jpg', await toJPG(plate, s, 1200))),
+    fileBtn('Product render', 'PNG, 2400 px, in the frame', false, () => withFinal(async (pl) => download(baseName(s) + '.png', await toPNG(pl, s, 'brass', 2400, true)))),
+    fileBtn('Black and white', 'PNG, 2400 px, plate only', false, () => withFinal(async (pl) => download(baseName(s) + '-bw.png', await toPNG(pl, s, 'bw', 2400, false)))),
+    fileBtn('Thumbnail', 'JPG, 1200 px', false, () => withFinal(async (pl) => download(baseName(s) + '.jpg', await toJPG(pl, s, 1200)))),
   );
   p.appendChild(list2);
 
@@ -495,45 +594,139 @@ function toast(msg: string) {
 // ---------------------------------------------------------------- explore
 
 let exploreRound = 0;
-let exploreSeeds: number[] = [];
+let exploreToken = 0;
 function openExplore() {
   $('exploreOverlay').hidden = false;
   fillExplore();
 }
 function closeExplore() {
   $('exploreOverlay').hidden = true;
+  exploreToken++;
 }
-function fillExplore() {
+async function fillExplore() {
+  const token = ++exploreToken;
   const grid = $('exploreGrid');
   grid.innerHTML = '';
-  exploreSeeds = [];
   const base = clone(s);
-  if (base.pattern.rule !== 'random') base.pattern.rule = 'random';
+  if (base.pattern.kind === 'cells' && base.pattern.rule !== 'random') base.pattern.rule = 'random';
+  const tiles: { seed: number; img: HTMLImageElement; lab: HTMLSpanElement }[] = [];
   for (let i = 0; i < 9; i++) {
     const seed = Math.floor(hash01(s.seed, exploreRound, i) * 1000000);
-    exploreSeeds.push(seed);
-    const v = clone(base);
-    v.seed = seed;
-    const pl = buildPlate(v);
-    const c = renderToCanvas(pl, 640, 'brass', v.material.t, '#1c1916', false);
     const b = document.createElement('button');
     b.type = 'button';
     b.setAttribute('aria-label', `Use seed ${seed}`);
     const img = document.createElement('img');
     img.alt = '';
-    img.src = c.toDataURL('image/png');
     const lab = document.createElement('span');
     lab.textContent = `Seed ${seed}`;
     b.append(img, lab);
     b.addEventListener('click', () => {
       s.seed = seed;
-      s.pattern.rule = 'random';
+      if (s.pattern.kind === 'cells') s.pattern.rule = 'random';
       closeExplore();
       update();
     });
     grid.appendChild(b);
+    tiles.push({ seed, img, lab });
+  }
+  for (const t of tiles) {
+    const v = clone(base);
+    v.seed = t.seed;
+    if (isFieldKind(v)) t.lab.textContent = `Seed ${t.seed}, growing`;
+    const pl = isFieldKind(v) ? await buildField(v, 'draft') : buildPlate(v);
+    if (token !== exploreToken) return;
+    if (!pl) continue;
+    t.img.src = renderToCanvas(pl, 640, 'brass', v.material.t, '#1c1916', false).toDataURL('image/png');
+    t.lab.textContent = `Seed ${t.seed}`;
+    await new Promise((r) => setTimeout(r, 0));
   }
 }
+
+// ---------------------------------------------------------------- background builds
+
+const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
+let reqSeq = 0;
+const waiting = new Map<number, (p: Plate | null) => void>();
+let statusFor = -1;
+worker.onmessage = (e: MessageEvent) => {
+  const { id, plate: pl, progress, error } = e.data;
+  if (progress) {
+    if (id === statusFor) setStatus(progress);
+    return;
+  }
+  const cb = waiting.get(id);
+  waiting.delete(id);
+  if (error) console.error(error);
+  cb?.(pl ?? null);
+};
+
+function buildField(st: Settings, quality: 'draft' | 'final'): Promise<Plate | null> {
+  const id = ++reqSeq;
+  return new Promise((res) => {
+    waiting.set(id, res);
+    worker.postMessage({ id, settings: st, quality });
+  });
+}
+
+function setStatus(msg: string | null) {
+  const el = $('status');
+  el.hidden = !msg;
+  if (msg) el.textContent = msg;
+}
+
+// The live preview: one build at a time, always for the newest settings.
+// A quick draft comes first; a refined build follows once the sliders rest.
+let busy = false;
+let wanted: 'draft' | 'final' | null = null;
+let finalTimer = 0;
+let plateKey = '';
+const keyOf = (st: Settings) => JSON.stringify({ ...st, name: '', edition: 0 });
+
+function requestField() {
+  wanted = 'draft';
+  clearTimeout(finalTimer);
+  pump();
+}
+
+async function pump() {
+  if (busy || !wanted) return;
+  const quality = wanted;
+  wanted = null;
+  busy = true;
+  const st = clone(s);
+  const key = keyOf(st);
+  const id = reqSeq + 1;
+  statusFor = id;
+  setStatus(quality === 'draft' ? 'Building preview' : 'Refining for cutting');
+  const pl = await buildField(st, quality);
+  busy = false;
+  if (pl && key === keyOf(s)) {
+    plate = pl;
+    plateKey = key;
+    if (!userMovedView) fit();
+    draw();
+    renderReadouts();
+  }
+  if (wanted) return pump();
+  setStatus(null);
+  if (pl && pl.quality === 'draft' && key === keyOf(s)) {
+    finalTimer = window.setTimeout(() => {
+      wanted = 'final';
+      pump();
+    }, 450);
+  }
+}
+
+/** Run an export with geometry refined for cutting. */
+async function withFinal(fn: (pl: Plate) => void | Promise<void>) {
+  if (!isFieldKind(s) || (plate.quality === 'final' && plateKey === keyOf(s))) return fn(plate);
+  toast('Refining the plate for cutting');
+  clearTimeout(finalTimer);
+  const pl = await buildField(clone(s), 'final');
+  if (!pl) return toast('Could not build the plate');
+  return fn(pl);
+}
+
 
 // ---------------------------------------------------------------- update + draw
 
@@ -541,8 +734,17 @@ function update() {
   const r = sanitize(s);
   s = r.s;
   notes = r.notes;
-  plate = buildPlate(s);
   syncControls();
+  if (isFieldKind(s)) {
+    if (!plate) plate = finishPlate(s, [], [], { dropped: 0, quality: 'draft' });
+    requestField();
+  } else {
+    clearTimeout(finalTimer);
+    wanted = null;
+    setStatus(null);
+    plate = buildPlate(s);
+    plateKey = keyOf(s);
+  }
   if (!userMovedView) fit();
   draw();
   renderReadouts();
@@ -556,18 +758,18 @@ function syncControls() {
     'pattern.seam': lim.minWeb,
     'pattern.gap': lim.minCut,
     'plate.border': lim.minWeb,
+    'pattern.cMin': lim.minCut,
+    'pattern.cMax': lim.minCut,
   };
-  for (const [path, el] of numEls) {
-    if (mins[path] !== undefined) el.range.min = String(mins[path]);
-    if (path === 'plate.holeD') el.range.max = String(Math.max(0, s.plate.border - 2 * lim.minWeb));
-    const vv = get(path) as number;
+  for (const el of numEls) {
+    if (mins[el.path] !== undefined) el.range.min = String(mins[el.path]);
+    if (el.path === 'plate.holeD') el.range.max = String(Math.max(0, s.plate.border - 2 * lim.minWeb));
+    const vv = get(el.path) as number;
     el.range.value = String(vv);
     if (document.activeElement !== el.num) el.num.value = vv.toFixed(el.ctl.digits);
   }
-  for (const [path, sel] of selEls) sel.value = String(get(path));
-  const isRandom = s.pattern.rule === 'random';
-  variationRow.forEach((e) => (e.hidden = !isRandom || s.pattern.layout === 'single'));
-  ruleRow.hidden = s.pattern.layout === 'single';
+  for (const { path, sel } of selEls) sel.value = String(get(path));
+  for (const c of conditional) c.el.hidden = !c.when(s);
   const name = $<HTMLInputElement>('nameInput');
   if (document.activeElement !== name) name.value = s.name;
   const ed = $<HTMLInputElement>('editionInput');
@@ -583,13 +785,22 @@ function renderReadouts() {
     ['Open area', `${(st.openArea * 100).toFixed(1)}%`],
     ['Cut length', `${Math.round(st.cutLength).toLocaleString()} in`],
     ['Pierces', String(st.pierces)],
-    ['Slots', String(st.slots)],
   ];
+  if (st.bridges) parts.push(['Bridges', String(st.bridges)]);
   el.innerHTML = parts.map(([k, vv]) => `<span>${k} <b>${vv}</b></span>`).join('');
-  if (notes.length) {
+  if (isFieldKind(s) && plate.quality === 'draft') {
+    const d = document.createElement('span');
+    d.textContent = 'Preview; refining for cutting';
+    el.appendChild(d);
+  }
+  const problems: string[] = [...notes];
+  if (st.islands) problems.push(`${st.islands} loose brass piece${st.islands > 1 ? 's' : ''} remain.`);
+  if (st.thinSpots) problems.push(`${st.thinSpots} spot${st.thinSpots > 1 ? 's are' : ' is'} still under the minimum width.`);
+  if (st.pierces <= plate.holes.length + 0 && plate.quality === 'final') problems.push('No pattern cuts at these settings.');
+  if (problems.length) {
     const n = document.createElement('span');
     n.className = 'notes';
-    n.textContent = notes.join(' ');
+    n.textContent = problems.join(' ');
     el.appendChild(n);
   }
 
@@ -600,11 +811,12 @@ function renderReadouts() {
     ['Narrowest cut allowed', f3(lim.minCut)],
     ['Inside corner radius', f3(lim.cornerR)],
     ['Typical kerf', f3(lim.kerf)],
-    ['Brass line / seam', `${s.pattern.line.toFixed(3)} / ${s.pattern.seam.toFixed(3)} in`],
-    ['Cut gap', f3(s.pattern.gap)],
     ['Open area', `${(st.openArea * 100).toFixed(1)}%`],
     ['Cut length', `${st.cutLength.toFixed(1)} in`],
     ['Pierces', String(st.pierces)],
+    ['Bridges added', String(st.bridges)],
+    ['Loose pieces', String(st.islands)],
+    ['Spots under minimum', String(st.thinSpots)],
     ['Stubs removed', String(st.dropped)],
   ];
   limitsEl.innerHTML = `<table class="limits"><tbody>${rows.map(([a, b]) => `<tr><td>${a}</td><td>${b}</td></tr>`).join('')}</tbody></table>`;
@@ -620,6 +832,7 @@ function persistSoon() {
     history.replaceState(null, '', '#' + lastHash);
   }, 350);
 }
+
 
 function canvasSize() {
   const r = canvas.getBoundingClientRect();

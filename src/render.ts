@@ -1,8 +1,7 @@
 // Canvas rendering. The preview draws the same RoundPoly geometry that is
 // exported, so what you see is exactly what gets cut.
 
-import { RoundPoly } from './geom';
-import { rpSegments } from './geom';
+import { RoundPoly, V, rpSegments } from './geom';
 import type { Plate } from './plate';
 
 export type ViewMode = 'brass' | 'bw' | 'cut';
@@ -11,6 +10,16 @@ export interface View {
   scale: number; // CSS px per inch
   ox: number; // CSS px of plate origin
   oy: number;
+}
+
+export function addPolygon(path: Path2D, pts: V[], view: View) {
+  pts.forEach((q, i) => {
+    const x = q.x * view.scale + view.ox;
+    const y = q.y * view.scale + view.oy;
+    if (i === 0) path.moveTo(x, y);
+    else path.lineTo(x, y);
+  });
+  path.closePath();
 }
 
 export function addRoundPoly(path: Path2D, rp: RoundPoly, view: View) {
@@ -172,6 +181,7 @@ export function drawPlate(
   const cuts = new Path2D();
   for (const rp of plate.slots) addRoundPoly(cuts, rp, view);
   for (const rp of plate.holes) addRoundPoly(cuts, rp, view);
+  for (const pth of plate.paths) addPolygon(cuts, pth, view);
   const body = new Path2D();
   body.addPath(outline);
   body.addPath(cuts);

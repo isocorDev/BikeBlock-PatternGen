@@ -2,7 +2,7 @@
 // and settings JSON. Every file carries the settings so it can be dropped
 // back onto the app to restore the exact design.
 
-import { RoundPoly, arcPoint, rpSegments } from './geom';
+import { RoundPoly, V, arcPoint, rpSegments } from './geom';
 import type { Plate } from './plate';
 import { renderToCanvas, ViewMode } from './render';
 import type { Settings } from './settings';
@@ -41,9 +41,13 @@ function svgPath(rp: RoundPoly): string {
   return d + 'Z';
 }
 
+function svgPoly(p: V[]): string {
+  return p.map((q, i) => `${i ? 'L' : 'M'}${f(q.x)} ${f(q.y)}`).join('') + 'Z';
+}
+
 export function toSVG(plate: Plate, s: Settings): string {
   const json = JSON.stringify(s);
-  const cuts = [...plate.holes, ...plate.slots].map(svgPath).join('');
+  const cuts = [...plate.holes, ...plate.slots].map(svgPath).join('') + plate.paths.map(svgPoly).join('');
   const st = plate.stats;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${f(plate.w)}in" height="${f(plate.h)}in" viewBox="0 0 ${f(plate.w)} ${f(plate.h)}">
@@ -139,9 +143,29 @@ export function toDXF(plate: Plate, s: Settings): string {
     g(8, layer);
   };
 
+  const plain = (pts: V[], layer: string) => {
+    g(0, 'POLYLINE');
+    g(8, layer);
+    g(66, 1);
+    g(10, 0);
+    g(20, 0);
+    g(30, 0);
+    g(70, 1);
+    for (const q of pts) {
+      g(0, 'VERTEX');
+      g(8, layer);
+      g(10, q.x);
+      g(20, H - q.y);
+      g(30, 0);
+    }
+    g(0, 'SEQEND');
+    g(8, layer);
+  };
+
   poly(plate.outline, 'OUTLINE');
   for (const rp of plate.holes) poly(rp, 'CUTS');
   for (const rp of plate.slots) poly(rp, 'CUTS');
+  for (const pth of plate.paths) plain(pth, 'CUTS');
   g(0, 'ENDSEC');
   g(0, 'EOF');
   return out.join('\r\n') + '\r\n';

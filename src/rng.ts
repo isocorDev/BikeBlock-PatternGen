@@ -27,3 +27,22 @@ export function hash01(...ints: number[]): number {
   for (const i of ints) h = mix(h, i | 0);
   return fmix(h ^ ints.length) / 4294967296;
 }
+
+/** Small fast seeded PRNG (sfc32) for sequential sampling. */
+export function sfc32(seed: number, salt = 0): () => number {
+  let a = Math.floor(hash01(seed, salt, 1) * 4294967296) | 0;
+  let b = Math.floor(hash01(seed, salt, 2) * 4294967296) | 0;
+  let c = Math.floor(hash01(seed, salt, 3) * 4294967296) | 0;
+  let d = 1;
+  const next = () => {
+    const t = (((a + b) | 0) + d) | 0;
+    d = (d + 1) | 0;
+    a = b ^ (b >>> 9);
+    b = (c + (c << 3)) | 0;
+    c = (c << 21) | (c >>> 11);
+    c = (c + t) | 0;
+    return (t >>> 0) / 4294967296;
+  };
+  for (let i = 0; i < 12; i++) next();
+  return next;
+}
