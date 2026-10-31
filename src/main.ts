@@ -42,9 +42,14 @@ interface NumCtl {
   hint?: string;
 }
 
-const get = (path: Path): any => path.split('.').reduce((o: any, k) => o[k], s);
+// The Pattern tab edits layer A or layer B; 'pattern.*' paths follow it.
+let editing: 'A' | 'B' = 'A';
+const route = (path: Path) => (editing === 'B' && path.startsWith('pattern.') ? 'patternB.' + path.slice(8) : path);
+/** Settings as the controls see them: the edited layer in the pattern slot. */
+const viewOf = (st: Settings): Settings => (editing === 'B' ? { ...st, pattern: st.patternB } : st);
+const get = (path: Path): any => route(path).split('.').reduce((o: any, k) => o[k], s);
 function set(path: Path, val: unknown) {
-  const keys = path.split('.');
+  const keys = route(path).split('.');
   const last = keys.pop()!;
   const o = keys.reduce((acc: any, k) => acc[k], s);
   o[last] = val;
@@ -166,40 +171,90 @@ function chips(parent: HTMLElement, items: [string, () => void][]) {
 }
 
 type Preset = [string, Partial<Settings['pattern']>];
-const PRESETS: Preset[] = [
-  ['Tumbling hatch', { kind: 'cells', layout: 'tumbling', fill: 'hatch', scale: 3.4, rot: 0, line: 0.14, gap: 0.22, seam: 0.14, rule: 'random', variation: 0.5, phase: 0 }],
-  ['Basketweave', { kind: 'cells', layout: 'parquet', fill: 'hatch', scale: 2, rot: 0, line: 0.14, gap: 0.2, seam: 0.2, rule: 'alternate', phase: 0 }],
-  ['Triangle facets', { kind: 'cells', layout: 'triangles', fill: 'hatch', scale: 3, rot: 0, line: 0.14, gap: 0.2, seam: 0.14, rule: 'random', variation: 0.67, phase: 0 }],
-  ['Nested rhombi', { kind: 'cells', layout: 'tumbling', fill: 'concentric', scale: 3.4, rot: 0, line: 0.14, gap: 0.18, seam: 0.16, phase: 0 }],
-  ['Faceted stone', { kind: 'cells', layout: 'voronoi', fill: 'hatch', scale: 2.2, rot: 0, line: 0.14, gap: 0.2, seam: 0.16, rule: 'random', variation: 0.67, vJitter: 0.8, vRelax: 2 }],
-  ['Stained glass', { kind: 'cells', layout: 'voronoi', fill: 'open', scale: 1.4, seam: 0.16, vJitter: 0.9, vRelax: 2 }],
-  ['Coral', { kind: 'rd', rd: 'coral', scale: 0.7, open: 0.45, fieldMode: 'region', seam: 0.16, islands: 'bridge' }],
-  ['Labyrinth', { kind: 'rd', rd: 'labyrinth', scale: 0.7, open: 0.45, fieldMode: 'region', seam: 0.16, islands: 'bridge' }],
-  ['Topographic', { kind: 'noise', fieldMode: 'band', scale: 5, open: 0.5, octaves: 2, warp: 0.25, line: 0.14, gap: 0.2, seam: 0.16, islands: 'bridge' }],
-  ['Perforated', { kind: 'circles', cSizing: 'noise', cMin: 0.15, cMax: 0.9, scale: 4, line: 0.14 }],
-  ['Life', { kind: 'life', scale: 0.45, line: 0.14, round: 0.3, lifeDensity: 0.35, lifeGens: 6 }],
-  ['Single field', { kind: 'cells', layout: 'single', fill: 'hatch', rot: 30, line: 0.14, gap: 0.22, rule: 'first', phase: 0 }],
+const PRESET_GROUPS: [string, Preset[]][] = [
+  [
+    'Geometric',
+    [
+      ['Tumbling blocks', { kind: 'cells', layout: 'tumbling', fill: 'hatch', scale: 3.4, rot: 0, line: 0.14, gap: 0.22, seam: 0.14, rule: 'random', variation: 0.5, phase: 0 }],
+      ['Basketweave', { kind: 'cells', layout: 'parquet', fill: 'hatch', scale: 2, rot: 0, line: 0.14, gap: 0.2, seam: 0.2, rule: 'alternate', phase: 0 }],
+      ['Triangle facets', { kind: 'cells', layout: 'triangles', fill: 'hatch', scale: 3, rot: 0, line: 0.14, gap: 0.2, seam: 0.14, rule: 'random', variation: 0.67, phase: 0 }],
+      ['Nested rhombi', { kind: 'cells', layout: 'tumbling', fill: 'concentric', scale: 3.4, rot: 0, line: 0.14, gap: 0.18, seam: 0.16, phase: 0 }],
+      ['Deco steps', { kind: 'cells', layout: 'parquet', fill: 'concentric', scale: 3.2, rot: 0, line: 0.14, gap: 0.2, seam: 0.2, phase: 0 }],
+      ['Single field', { kind: 'cells', layout: 'single', fill: 'hatch', rot: 30, line: 0.14, gap: 0.22, rule: 'first', phase: 0 }],
+    ],
+  ],
+  [
+    'Japanese kumiko',
+    [
+      ['Asanoha', { kind: 'lattice', motif: 'asanoha', scale: 2.5, rot: 0, line: 0.14 }],
+      ['Kagome', { kind: 'lattice', motif: 'kagome', scale: 1.6, rot: 0, line: 0.14 }],
+    ],
+  ],
+  [
+    'Islamic geometric',
+    [
+      ['Eight-point star', { kind: 'lattice', motif: 'star8', scale: 3, rot: 0, line: 0.14, starAngle: 67.5 }],
+      ['Six-point star', { kind: 'lattice', motif: 'star6', scale: 3, rot: 0, line: 0.14, starAngle: 60 }],
+      ['Four-point star', { kind: 'lattice', motif: 'star4', scale: 2.5, rot: 0, line: 0.14, starAngle: 67.5 }],
+    ],
+  ],
+  [
+    'Organic and generative',
+    [
+      ['Faceted stone', { kind: 'cells', layout: 'voronoi', fill: 'hatch', scale: 2.2, rot: 0, line: 0.14, gap: 0.2, seam: 0.16, rule: 'random', variation: 0.67, vJitter: 0.8, vRelax: 2 }],
+      ['Flowing facets', { kind: 'cells', layout: 'voronoi', fill: 'hatch', scale: 1.6, rot: 0, line: 0.14, gap: 0.2, seam: 0.16, rule: 'flow', vJitter: 0.8, vRelax: 2 }],
+      ['Stained glass', { kind: 'cells', layout: 'voronoi', fill: 'open', scale: 1.4, seam: 0.16, vJitter: 0.9, vRelax: 2 }],
+      ['Coral', { kind: 'rd', rd: 'coral', scale: 0.7, open: 0.45, fieldMode: 'region', seam: 0.16, islands: 'bridge' }],
+      ['Labyrinth', { kind: 'rd', rd: 'labyrinth', scale: 0.7, open: 0.45, fieldMode: 'region', seam: 0.16, islands: 'bridge' }],
+      ['Topographic', { kind: 'noise', fieldMode: 'band', scale: 5, open: 0.5, octaves: 2, warp: 0.25, line: 0.14, gap: 0.2, seam: 0.16, islands: 'bridge' }],
+      ['Perforated', { kind: 'circles', cSizing: 'noise', cMin: 0.15, cMax: 0.9, scale: 4, line: 0.14 }],
+      ['Life', { kind: 'life', scale: 0.45, line: 0.14, round: 0.3, lifeDensity: 0.35, lifeGens: 6 }],
+    ],
+  ],
 ];
+
+function applyPreset(name: string, pat: Partial<Settings['pattern']>) {
+  Object.assign(editing === 'B' ? s.patternB : s.pattern, pat);
+  if (editing === 'A') s.name = name;
+  update();
+}
 
 function buildPatternPanel() {
   const p = $('panel-pattern');
-  title(p, 'Presets');
-  chips(
-    p,
-    PRESETS.map(([name, pat]) => [
-      name,
-      () => {
-        Object.assign(s.pattern, pat);
-        s.name = name;
-        update();
-      },
-    ]),
+  const sw = document.createElement('div');
+  sw.className = 'layer-switch seg';
+  sw.setAttribute('role', 'radiogroup');
+  sw.setAttribute('aria-label', 'Layer to edit');
+  sw.innerHTML = '<button data-layer="A" aria-pressed="true">Layer A</button><button data-layer="B" aria-pressed="false">Layer B</button>';
+  sw.querySelectorAll<HTMLButtonElement>('button').forEach((b) =>
+    b.addEventListener('click', () => {
+      editing = b.dataset.layer as 'A' | 'B';
+      syncControls();
+    }),
   );
+  const swWrap = document.createElement('div');
+  swWrap.className = 'layer-row';
+  const swHint = document.createElement('p');
+  swHint.className = 'hint';
+  swHint.textContent = 'Blending is on. Choose which layer these controls edit.';
+  swWrap.append(sw, swHint);
+  p.appendChild(swWrap);
+  conditional.push({ el: swWrap, when: (st) => st.blend.mode !== 'off' });
+
+  title(p, 'Presets');
+  for (const [group, items] of PRESET_GROUPS) {
+    const g = document.createElement('p');
+    g.className = 'chip-group';
+    g.textContent = group;
+    p.appendChild(g);
+    chips(p, items.map(([name, pat]) => [name, () => applyPreset(name, pat)]));
+  }
 
   title(p, 'Generator');
   selectRow(p, 'pattern.kind', 'Pattern', [
     ['cells', 'Cells and fills'],
     ['circles', 'Circle packing'],
+    ['lattice', 'Lattice (kumiko, Islamic)'],
     ['life', 'Game of Life'],
     ['noise', 'Noise field'],
     ['rd', 'Reaction diffusion'],
@@ -225,6 +280,7 @@ function buildPatternPanel() {
   selectRow(p, 'pattern.rule', 'Line direction', [
     ['random', 'Random by seed'],
     ['alternate', 'Alternating'],
+    ['flow', 'Flowing'],
     ['first', 'All the same'],
     ['second', 'All the same, turned'],
   ], false, hatch);
@@ -264,6 +320,22 @@ function buildPatternPanel() {
   numRow(p, { path: 'pattern.lifeGens', label: 'Generations', unit: '', min: 0, max: 120, step: 1, digits: 0 }, life);
   numRow(p, { path: 'pattern.round', label: 'Roundness', unit: '', min: 0, max: 1, step: 0.01, digits: 2 }, life);
 
+  // ---- lattice
+  const lat = kindIs('lattice');
+  const star: When = (st) => lat(st) && st.pattern.motif.startsWith('star');
+  title(p, 'Lattice', 'Brass straps along a traditional line pattern, with everything between them cut.', lat);
+  selectRow(p, 'pattern.motif', 'Motif', [
+    ['asanoha', 'Asanoha (hemp leaf)'],
+    ['kagome', 'Kagome (basket weave)'],
+    ['star8', 'Islamic eight-point star'],
+    ['star6', 'Islamic six-point star'],
+    ['star4', 'Islamic four-point star'],
+  ], false, lat);
+  numRow(p, { path: 'pattern.scale', label: 'Tile size', unit: 'in', min: 0.8, max: 10, step: 0.05, digits: 2 }, lat);
+  numRow(p, { path: 'pattern.line', label: 'Strap width', unit: 'in', min: 0.0625, max: 0.75, step: 0.005, digits: 3 }, lat);
+  numRow(p, { path: 'pattern.starAngle', label: 'Star angle', unit: 'deg', min: 50, max: 80, step: 0.5, digits: 1, hint: 'The angle the straps leave each tile edge. 67.5 is the classic eight-point star; 60 the classic six-point.' }, star);
+  numRow(p, { path: 'pattern.rot', label: 'Rotation', unit: 'deg', min: -90, max: 90, step: 1, digits: 0 }, lat);
+
   // ---- fields
   const field = kindIs('noise', 'rd');
   const band: When = (st) => field(st) && st.pattern.fieldMode === 'band';
@@ -293,6 +365,83 @@ function buildPatternPanel() {
     ['remove', 'Cut away'],
   ], false, field);
   numRow(p, { path: 'pattern.seam', label: 'Bridge width', unit: 'in', min: 0.0625, max: 0.75, step: 0.005, digits: 3 }, (st) => field(st) && st.pattern.islands === 'bridge');
+}
+
+type BlendPreset = [string, string, Partial<Settings['blend']>, Partial<Settings['pattern']>?];
+const BLEND_PRESETS: BlendPreset[] = [
+  ['Off', 'One pattern only.', { mode: 'off' }],
+  ['Fade to coral', 'Layer A dissolves into coral from left to right.', { mode: 'crossfade', source: 'gradient', angle: 0, center: 0.5, soft: 0.6 }, { kind: 'rd', rd: 'coral', scale: 0.7, open: 0.45, fieldMode: 'region', seam: 0.16 }],
+  ['Calm band', 'A solid brass band across the plate, for example behind the top tube.', { mode: 'mask', source: 'band', angle: 0, center: 0.5, width: 0.3, soft: 0, solidB: true }],
+  ['Coral pools', 'Pools of coral open up inside layer A.', { mode: 'mask', source: 'noise', center: 0.55, soft: 0.1, nscale: 6, solidB: false }, { kind: 'rd', rd: 'coral', scale: 0.7, open: 0.45, fieldMode: 'region', seam: 0.16 }],
+  ['Wood grain', 'Layer A bends as if following wood grain. Wider lines hold up best.', { mode: 'warp', source: 'noise', amount: 0.6, nscale: 6 }],
+  ['Even glow', 'Smaller cuts in the middle, where the light is strongest, larger toward the edges. Needs line widths above the minimum to have room to work.', { mode: 'grow', source: 'radial', amount: 1, center: 0.5, soft: 1 }],
+];
+
+function buildBlendPanel() {
+  const p = $('panel-blend');
+  title(p, 'Blend presets', 'Combine layer A with a second pattern, or shape it with a gradient, band or noise.');
+  const wrap = chips(
+    p,
+    BLEND_PRESETS.map(([name, , bl, pb]) => [
+      name,
+      () => {
+        Object.assign(s.blend, bl);
+        if (pb) Object.assign(s.patternB, pb);
+        update();
+      },
+    ]),
+  );
+  wrap.querySelectorAll('button').forEach((b, i) => (b.title = BLEND_PRESETS[i][1]));
+
+  const on: When = (st) => st.blend.mode !== 'off';
+  const usesB: When = (st) => ['crossfade', 'union', 'intersect', 'subtract'].includes(st.blend.mode) || (st.blend.mode === 'mask' && !st.blend.solidB);
+  const usesSource: When = (st) => ['crossfade', 'mask', 'warp', 'grow'].includes(st.blend.mode);
+  title(p, 'Mode');
+  selectRow(p, 'blend.mode', 'Blend', [
+    ['off', 'Off'],
+    ['crossfade', 'Crossfade A into B'],
+    ['mask', 'Mask: A here, B there'],
+    ['union', 'Combine: cut both'],
+    ['intersect', 'Combine: cut where both cut'],
+    ['subtract', 'Combine: A minus B'],
+    ['warp', 'Warp A'],
+    ['grow', 'Grow and shrink A'],
+  ]);
+  selectRow(p, 'blend.solidB', 'B side of the mask', [
+    ['false', 'Layer B pattern'],
+    ['true', 'Solid brass'],
+  ], false, (st) => st.blend.mode === 'mask');
+  const edit = document.createElement('button');
+  edit.type = 'button';
+  edit.className = 'btn';
+  edit.innerHTML = '<span>Edit layer B</span><small>opens the Pattern tab on layer B</small>';
+  edit.addEventListener('click', () => {
+    editing = 'B';
+    (document.querySelector('.tabs button[data-tab="pattern"]') as HTMLButtonElement).click();
+    syncControls();
+  });
+  p.appendChild(edit);
+  conditional.push({ el: edit, when: usesB });
+
+  title(p, 'Source', 'Decides where B shows, or how strongly the warp or growth applies.', usesSource);
+  selectRow(p, 'blend.source', 'Shape', [
+    ['gradient', 'Side to side'],
+    ['radial', 'Center outward'],
+    ['band', 'Band across'],
+    ['noise', 'Noise'],
+  ], false, usesSource);
+  const src = (...k: string[]): When => (st) => usesSource(st) && k.includes(st.blend.source);
+  numRow(p, { path: 'blend.center', label: 'Position', unit: '', min: 0, max: 1, step: 0.01, digits: 2 }, usesSource);
+  numRow(p, { path: 'blend.width', label: 'Band width', unit: '', min: 0.05, max: 1, step: 0.01, digits: 2 }, src('band'));
+  numRow(p, { path: 'blend.soft', label: 'Softness', unit: '', min: 0, max: 1, step: 0.01, digits: 2 }, usesSource);
+  numRow(p, { path: 'blend.angle', label: 'Direction', unit: 'deg', min: -180, max: 180, step: 1, digits: 0 }, src('gradient', 'band'));
+  numRow(p, { path: 'blend.nscale', label: 'Noise size', unit: 'in', min: 0.5, max: 30, step: 0.1, digits: 1 }, (st) => (usesSource(st) && st.blend.source === 'noise') || st.blend.mode === 'warp');
+  numRow(p, { path: 'blend.amount', label: 'Strength', unit: '', min: 0, max: 1, step: 0.01, digits: 2 }, (st) => st.blend.mode === 'warp' || st.blend.mode === 'grow');
+  const note = document.createElement('p');
+  note.className = 'hint';
+  note.textContent = 'Blended plates are built and repaired like the field patterns: thin brass and cuts are fixed and loose pieces bridged. Check the Fabrication tab.';
+  p.appendChild(note);
+  conditional.push({ el: note, when: on });
 }
 
 function buildPlatePanel() {
@@ -488,10 +637,10 @@ function wireChrome() {
     }),
   );
 
-  document.querySelectorAll<HTMLButtonElement>('.seg button').forEach((b) =>
+  document.querySelectorAll<HTMLButtonElement>('.stage-tools .seg button').forEach((b) =>
     b.addEventListener('click', () => {
       mode = b.dataset.mode as ViewMode;
-      document.querySelectorAll<HTMLButtonElement>('.seg button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+      document.querySelectorAll<HTMLButtonElement>('.stage-tools .seg button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
       if (!userMovedView) fit();
       draw();
     }),
@@ -733,6 +882,7 @@ async function withFinal(fn: (pl: Plate) => void | Promise<void>) {
 function update() {
   const r = sanitize(s);
   s = r.s;
+  if (s.blend.mode === 'off') editing = 'A';
   notes = r.notes;
   syncControls();
   if (isFieldKind(s)) {
@@ -769,7 +919,11 @@ function syncControls() {
     if (document.activeElement !== el.num) el.num.value = vv.toFixed(el.ctl.digits);
   }
   for (const { path, sel } of selEls) sel.value = String(get(path));
-  for (const c of conditional) c.el.hidden = !c.when(s);
+  const vs = viewOf(s);
+  for (const c of conditional) c.el.hidden = !c.when(vs);
+  document.querySelectorAll<HTMLButtonElement>('.layer-switch button').forEach((b) =>
+    b.setAttribute('aria-pressed', String(b.dataset.layer === editing)),
+  );
   const name = $<HTMLInputElement>('nameInput');
   if (document.activeElement !== name) name.value = s.name;
   const ed = $<HTMLInputElement>('editionInput');
@@ -948,6 +1102,7 @@ function wirePanZoom() {
 
 s = initialSettings();
 buildPatternPanel();
+buildBlendPanel();
 buildPlatePanel();
 buildFabPanel();
 buildFilesPanel();

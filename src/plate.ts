@@ -54,7 +54,9 @@ export interface Plate {
   quality: 'draft' | 'final';
 }
 
-export const isFieldKind = (s: Settings) => s.pattern.kind === 'noise' || s.pattern.kind === 'rd';
+/** True when the plate is built on a raster in the worker (fields, lattices, blends). */
+export const isFieldKind = (s: Settings) =>
+  s.blend.mode !== 'off' || s.pattern.kind === 'noise' || s.pattern.kind === 'rd' || s.pattern.kind === 'lattice';
 
 /** Radius used to open every convex cut. */
 export function openRadius(lim: FabLimits, width: number) {
@@ -157,6 +159,7 @@ function buildCells(s: Settings): Plate {
   const toPlate = (q: V): V => ({ x: cx + q.x * cos - q.y * sin, y: cy + q.x * sin + q.y * cos });
   const R = Math.hypot(w, h) / 2;
   const cells = makeCells(s, R);
+  const flow = p.rule === 'flow' ? fbm(s.seed, 2, 0.3) : null;
 
   const period = p.line + p.gap;
   const ro = openRadius(lim, p.gap);
@@ -210,7 +213,13 @@ function buildCells(s: Settings): Plate {
       continue;
     }
 
-    const dir = pickDir(cell.dirs, cell.parity, cell.key, s) + rot;
+    let dir: number;
+    if (flow) {
+      // Lines follow a slow noise field, so neighbouring cells turn gradually.
+      const c = centroid(cell.poly);
+      const k = 1 / (p.scale * 3);
+      dir = flow(c.x * k, c.y * k) * Math.PI * 1.2 + rot;
+    } else dir = pickDir(cell.dirs, cell.parity, cell.key, s) + rot;
     const n = { x: -Math.sin(dir), y: Math.cos(dir) };
     const anchor = centroid(poly);
     const t0 = dot(n, anchor) - p.gap / 2 + p.phase * period;
